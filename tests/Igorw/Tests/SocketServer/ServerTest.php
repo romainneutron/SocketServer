@@ -3,6 +3,7 @@
 namespace Igorw\Tests\SocketServer;
 
 use Igorw\SocketServer\Server;
+use Igorw\SocketServer\EventLoop;
 
 class ServerTest extends \PHPUnit_Framework_TestCase
 {
@@ -15,7 +16,7 @@ class ServerTest extends \PHPUnit_Framework_TestCase
      */
     public function setUp()
     {
-        $this->server = new Server('localhost', 0, 0);
+        $this->server = new Server('localhost', 0, new EventLoop(.0));
 
         $this->port = $this->server->getPort();
     }
@@ -150,8 +151,6 @@ class ServerTest extends \PHPUnit_Framework_TestCase
     public function testInput()
     {
         $input = fopen('php://temp', 'r+');
-
-        $this->server = new Server('localhost', 0, 0);
 
         $this->server->addInput('foo', $input);
 

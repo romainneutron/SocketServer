@@ -7,75 +7,57 @@ use Evenement\EventEmitter;
 class Server extends EventEmitter
 {
     private $master;
-    private $timeout;
     private $inputs = array();
-    private $sockets = array();
     private $clients = array();
 
-    // timeout = microseconds
-    public function __construct($host, $port, $timeout = 1000000)
+    public function __construct($host, $port, EventLoop $loop)
     {
         $this->master = stream_socket_server("tcp://$host:$port", $errno, $errstr);
         if (false === $this->master) {
             throw new ConnectionException($errstr, $errno);
         }
 
-        $this->sockets[] = $this->master;
-
-        $this->timeout = $timeout;
+        $this->loop = $loop;
+        $this->loop->addStream($this->master, array($this, 'handleAccept'));
     }
 
     public function addInput($name, $stream)
     {
         $this->inputs[$name] = $stream;
-        $this->sockets[] = $stream;
+        $this->loop->addStream($stream, array($this, 'handleInput'));
     }
 
     public function run()
     {
-        // @codeCoverageIgnoreStart
-        while (true) {
-            $this->tick();
-        }
-        // @codeCoverageIgnoreEnd
+        $this->loop->run();
     }
 
     public function tick()
     {
-        $readySockets = $this->sockets;
-        @stream_select($readySockets, $write = null, $except = null, 0, $this->timeout);
-        foreach ($readySockets as $socket) {
-            if ($this->master === $socket) {
-                $newSocket = stream_socket_accept($this->master);
-                if (false === $newSocket) {
-                    $this->emit('error', array('Error accepting new connection'));
-                    continue;
-                }
-                $this->handleConnection($newSocket);
-            } elseif (in_array($socket, $this->inputs)) {
-                $this->handleInput($socket);
-            } else {
-                $data = @stream_socket_recvfrom($socket, 4096);
-                if ($data === '') {
-                    $this->handleDisconnect($socket);
-                } else {
-                    $this->handleData($socket, $data);
-                }
-            }
-        };
+        $this->loop->tick();
     }
 
-    private function handleConnection($socket)
+    public function handleAccept($master)
+    {
+        $socket = stream_socket_accept($master);
+        if (false === $socket) {
+            $this->emit('error', array('Error accepting new connection'));
+            return;
+        }
+        $this->handleConnection($socket);
+    }
+
+    public function handleConnection($socket)
     {
         $client = $this->createConnection($socket);
 
         $this->clients[(int) $socket] = $client;
-        $this->sockets[] = $socket;
+        $this->loop->addStream($socket, array($this, 'handleData'));
 
         $this->emit('connect', array($client));
     }
 
-    private function handleInput($stream)
+    public function handleInput($stream)
     {
         $name = array_search($stream, $this->inputs);
         if (false !== $name) {
@@ -83,16 +65,21 @@ class Server extends EventEmitter
         }
     }
 
-    private function handleDisconnect($socket)
+    public function handleData($socket)
     {
-        $this->close($socket);
+        $data = @stream_socket_recvfrom($socket, 4096);
+        if ($data === '') {
+            $this->handleDisconnect($socket);
+            return;
+        }
+
+        $client = $this->getClient($socket);
+        $client->emit('data', array($data));
     }
 
-    private function handleData($socket, $data)
+    public function handleDisconnect($socket)
     {
-        $client = $this->getClient($socket);
-
-        $client->emit('data', array($data));
+        $this->close($socket);
     }
 
     public function getClient($socket)
@@ -121,8 +108,7 @@ class Server extends EventEmitter
         unset($this->clients[(int) $socket]);
         unset($client);
 
-        $index = array_search($socket, $this->sockets);
-        unset($this->sockets[$index]);
+        unset($this->loop->removeStream[$socket]);
 
         fclose($socket);
     }
